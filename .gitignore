@@ -1,0 +1,6 @@
+/node_modules
+/dist
+/build
+.env
+
+//Add the flage where check all the api booking done or not
