@@ -5,8 +5,10 @@ import User from '../models/User';
 import { IUser } from '../models/User'; // Import IUser interface
 import jwt from 'jsonwebtoken';
 import { generateAccessToken, generateRefreshToken } from '../helper/generateAccessToken';
-import crypto from 'crypto'; // To generate random token
+import crypto, { verify } from 'crypto'; // To generate random token
 import { sendPasswordResetEmail } from '../helper/sendPasswordResetEmail';
+import { generateOTP } from '../helper/generateOTP';
+import { sendOTPEmail } from '../helper/sendOTPEmail';
 interface ResetPasswordRequest extends Request {
   params: {
     token: string;
@@ -16,26 +18,49 @@ export const register = async (req: Request, res: Response) => {
   const {email , username, password, role } = req.body;
 
   try {
-    // Check if the user already exists
+    // Check existing user
     const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({ message: 'User already registered' });
+    
+    if (existingUser && existingUser.isVerified) {
+        return res.status(400).json({
+            success: false,
+            message: 'User already exists and is verified'
+        });
     }
 
-    // Hash the password
+    const otp = generateOTP();
+    const otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
     const hashedPassword = await bcrypt.hash(password, 10);
-    
-    // Create a new user
-    const newUser = new User({email, username, password: hashedPassword, role });
-    await newUser.save();
 
-    // Respond with success message
-    res.status(201).json({ message: 'User registered successfully' });
-  } catch (error) {
-    // Log the error and respond with server error message
-    console.error('Error registering user:', error);
-    res.status(500).json({ error: 'Server error' });
-  }
+    if (existingUser) {
+        existingUser.otp = otp;
+        existingUser.otpExpiry = otpExpiry;
+        await existingUser.save();
+    } else {
+        await User.create({
+            email,
+            username,
+            password: hashedPassword,
+            role,
+            otp,
+            otpExpiry,
+            isVerified: false
+        });
+    }
+
+    await sendOTPEmail(email, otp);
+
+    res.status(200).json({
+        success: true,
+        message: 'OTP sent successfully'
+    });
+} catch (error) {
+    console.error('Registration error:', error);
+    res.status(500).json({
+        success: false,
+        message: 'Error in registration'
+    });
+}
 };
 
 export const login = async (req: Request, res: Response) => {
@@ -70,6 +95,90 @@ export const login = async (req: Request, res: Response) => {
     res.status(500).json({ error: 'Server error' });
   }
 };
+
+export const  verifyUserusingtheotp = async (req:Request ,res:Response) => {
+  try {
+    const {  otp } = req.body;
+
+    if (!otp) {
+        return res.status(400).json({
+            success: false,
+            message: ' OTP are required'
+        });
+    }
+
+    const user = await User.findOne({
+        otp,
+        otpExpiry: { $gt: new Date() }
+    });
+
+    if (!user) {
+        return res.status(400).json({
+            success: false,
+            message: 'Invalid OTP or OTP expired'
+        });
+    }
+
+    // Update user status
+    user.isVerified = true;
+    user.otp = undefined;
+    user.otpExpiry = undefined;
+    await user.save();
+
+    return res.status(200).json({
+        success: true,
+        message: 'Email verified successfully'
+    });
+} catch (error) {
+    console.error('Verification error:', error);
+    return res.status(500).json({
+        success: false,
+        message: 'Error in verification'
+    });
+}
+}
+
+export const  resendOTP = async (req:Request ,res:Response) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+        return res.status(400).json({
+            success: false,
+            message: 'Email is required'
+        });
+    }
+
+    const user = await User.findOne({ email });
+    if (!user) {
+        return res.status(400).json({
+            success: false,
+            message: 'User not found'
+        });
+    }
+
+    const otp = generateOTP();
+    const otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
+
+    user.otp = otp;
+    user.otpExpiry = otpExpiry;
+    await user.save();
+
+    await sendOTPEmail(email, otp);
+
+    return res.status(200).json({
+        success: true,
+        message: 'OTP resent successfully'
+    });
+} catch (error) {
+    console.error('Resend OTP error:', error);
+    return res.status(500).json({
+        success: false,
+        message: 'Error in resending OTP'
+    });
+}
+}
+
 
 // Refresh Token Controller
 export const refreshToken = async (req: Request, res: Response) => {
